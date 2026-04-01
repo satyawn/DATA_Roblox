@@ -1,0 +1,332 @@
+local getgenv = getgenv or function() return _G end
+local identifyexecutor = identifyexecutor or function() return "Unknown" end
+local Drawing = Drawing or {}
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local lighting = game:GetService("Lighting")
+
+-- SAVE ORIGINAL LIGHTING
+local originalLighting = {
+    Brightness = lighting.Brightness,
+    Ambient = lighting.Ambient,
+    OutdoorAmbient = lighting.OutdoorAmbient,
+    ClockTime = lighting.ClockTime
+}
+
+-- VARIABLES
+local localPlayer = Players.LocalPlayer
+local camera = Workspace.CurrentCamera
+local centerPosition = camera.ViewportSize / 2
+
+local activeNPCs = {}
+local originalSizes = {}
+local trackedParts = {}
+
+local hitboxSize = 20
+local hitboxEnabled = false
+local showHitbox = false
+
+local silentAimEnabled = false
+local fovRadius = 180
+local showFovCircle = true
+local fovCircle
+
+local wallEnabled = false
+local outlineEnabled = false
+local fastScanEnabled = false
+
+local fullBrightEnabled = false
+local alwaysDayEnabled = false
+local noFogConnection = nil
+
+-- FOV CIRCLE
+pcall(function()
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Filled = false
+    fovCircle.Thickness = 1.5
+    fovCircle.Color = Color3.new(1,1,1)
+end)
+
+-- NPC VALID
+local function isValidNPC(m)
+    if not m or not m.Parent then return false end
+    local name = m.Name:lower()
+    if string.find(name,"zombie") then return true end
+    if m.Name == "Male" then
+        for _,c in ipairs(m:GetChildren()) do
+            if c.Name:sub(1,3) == "AI_" then return true end
+        end
+    end
+    return false
+end
+
+-- ADD NPC
+local function addNPC(m)
+    if activeNPCs[m] or not isValidNPC(m) then return end
+    local head = m:FindFirstChild("Head")
+    local root = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("UpperTorso")
+    if root then
+        activeNPCs[m] = {head = head or root, root = root}
+
+        -- AUTO APPLY ESP IF ENABLED
+        if wallEnabled then
+            local part = head or root
+            if part and not part:FindFirstChild("Wall_Box") then
+                local s = Instance.new("SphereHandleAdornment")
+                s.Name = "Wall_Box"
+                s.Radius = 1.2
+                s.Adornee = part
+                s.AlwaysOnTop = true
+                s.Transparency = 0.3
+                s.Color3 = string.find(m.Name:lower(),"zombie") and Color3.fromRGB(255,0,0) or Color3.fromRGB(0,255,0)
+                s.Parent = part
+                trackedParts[part] = s
+            end
+        end
+
+        if outlineEnabled then
+            if not m:FindFirstChild("ESP_Outline") then
+                local h = Instance.new("Highlight")
+                h.Name = "ESP_Outline"
+                h.FillTransparency = 1
+                h.OutlineColor = string.find(m.Name:lower(),"zombie") and Color3.fromRGB(255,0,0) or Color3.fromRGB(0,255,0)
+                h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                h.Parent = m
+            end
+        end
+    end
+end
+
+-- VISIBILITY
+local function isVisible(target)
+    if not target or not target:FindFirstChild("Head") then return false end
+    local ignore = {localPlayer.Character, target}
+    return #camera:GetPartsObscuringTarget({target.Head.Position}, ignore) == 0
+end
+
+-- CLOSEST NPC
+local function getClosestNPC()
+    local closest, dist = nil, fovRadius
+    for m,d in pairs(activeNPCs) do
+        if m.Parent and d.head then
+            local pos, onScreen = camera:WorldToViewportPoint(d.head.Position)
+            if onScreen then
+                local d2 = (Vector2.new(pos.X,pos.Y) - centerPosition).Magnitude
+                if d2 <= fovRadius and d2 < dist and isVisible(m) then
+                    closest = m
+                    dist = d2
+                end
+            end
+        end
+    end
+    return closest
+end
+
+-- SILENT AIM
+task.spawn(function()
+    pcall(function()
+        local func = filtergc('function',{Name='GetMuzzleCFrame'},true)
+        if func then
+            local old; old = hookfunction(func,function(self,cast)
+                local origin,barrel,cam = old(self,cast)
+                if silentAimEnabled then
+                    local npc = getClosestNPC()
+                    if npc and npc:FindFirstChild("Head") then
+                        return CFrame.new(origin.Position,npc.Head.Position),barrel,cam
+                    end
+                end
+                return origin,barrel,cam
+            end)
+        end
+    end)
+end)
+
+-- HITBOX
+local function applyHitbox(model, root)
+    if not originalSizes[model] then originalSizes[model] = root.Size end
+    root.Size = Vector3.new(hitboxSize,hitboxSize,hitboxSize)
+    root.Transparency = showHitbox and 0.8 or 1
+    if showHitbox then
+        root.Material = Enum.Material.Neon
+        root.Color = Color3.fromRGB(255,0,0)
+    end
+end
+
+local function restoreHitbox(model)
+    local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("UpperTorso")
+    if root and originalSizes[model] then
+        root.Size = originalSizes[model]
+        root.Transparency = 1
+    end
+end
+
+-- CLEAR SPHERE
+local function clearSpheres()
+    for _,s in pairs(trackedParts) do
+        if s then s:Destroy() end
+    end
+    trackedParts = {}
+end
+
+-- UI
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Window = Rayfield:CreateWindow({
+    Name = "TCATEZ HUB",
+    LoadingTitle = "Executor: "..identifyexecutor()
+})
+
+-- COMBAT
+local CombatTab = Window:CreateTab("Combat ⚔️")
+
+CombatTab:CreateToggle({Name="Silent Aim (FOV)",CurrentValue=false,Callback=function(v) silentAimEnabled=v end})
+CombatTab:CreateToggle({Name="Hitbox",CurrentValue=false,Callback=function(v) hitboxEnabled=v end})
+CombatTab:CreateToggle({Name="Show Hitbox Visual",CurrentValue=false,Callback=function(v) showHitbox=v end})
+
+CombatTab:CreateSlider({Name="Hitbox Size",Range={1,20},Increment=1,CurrentValue=20,Callback=function(v) hitboxSize=v end})
+
+CombatTab:CreateToggle({Name="Show FOV Circle",CurrentValue=true,Callback=function(v) showFovCircle=v end})
+CombatTab:CreateSlider({Name="FOV Radius",Range={0,500},Increment=1,CurrentValue=180,Callback=function(v) fovRadius=v end})
+
+-- VISUAL
+local VisualTab = Window:CreateTab("Visual 👁️")
+
+VisualTab:CreateToggle({
+    Name="ESP NPC (Sphere)",
+    CurrentValue=false,
+    Callback=function(v)
+        wallEnabled=v
+        if not v then clearSpheres() end
+    end
+})
+
+VisualTab:CreateToggle({
+    Name="ESP NPC (Outline Only)",
+    CurrentValue=false,
+    Callback=function(v)
+        outlineEnabled=v
+        for m,_ in pairs(activeNPCs) do
+            if not v then
+                local old=m:FindFirstChild("ESP_Outline")
+                if old then old:Destroy() end
+            end
+        end
+    end
+})
+
+VisualTab:CreateToggle({Name="Fast Scan (0.001s)",CurrentValue=false,Callback=function(v) fastScanEnabled=v end})
+
+VisualTab:CreateToggle({
+    Name="No Fog",
+    CurrentValue=false,
+    Callback=function(v)
+        local atm=lighting:FindFirstChildOfClass("Atmosphere")
+        if v then
+            if atm then
+                noFogConnection=atm:GetPropertyChangedSignal("Density"):Connect(function()
+                    atm.Density=0
+                end)
+                atm.Density=0
+            end
+            lighting.FogEnd=100000
+        else
+            if noFogConnection then noFogConnection:Disconnect() end
+            if atm then atm.Density=0.3 end
+        end
+    end
+})
+
+-- FULLBRIGHT FIX
+VisualTab:CreateToggle({
+    Name="FullBright",
+    CurrentValue=false,
+    Callback=function(v)
+        fullBrightEnabled=v
+        if not v then
+            lighting.Brightness = originalLighting.Brightness
+            lighting.Ambient = originalLighting.Ambient
+            lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+        end
+    end
+})
+
+-- ALWAYS DAY FIX
+VisualTab:CreateToggle({
+    Name="Always Day",
+    CurrentValue=false,
+    Callback=function(v)
+        alwaysDayEnabled=v
+        if not v then
+            lighting.ClockTime = originalLighting.ClockTime
+        end
+    end
+})
+
+-- HITBOX LOOP
+task.spawn(function()
+    while true do
+        if hitboxEnabled then
+            for m,d in pairs(activeNPCs) do
+                if m.Parent then applyHitbox(m,d.root) end
+            end
+        else
+            for m,_ in pairs(originalSizes) do restoreHitbox(m) end
+        end
+        task.wait(0.1)
+    end
+end)
+
+-- FAST SCAN LOOP
+task.spawn(function()
+    while true do
+        if fastScanEnabled then
+            local items=Workspace:GetDescendants()
+            for i,m in ipairs(items) do
+                if m:IsA("Model") and not activeNPCs[m] and isValidNPC(m) then
+                    addNPC(m)
+                end
+                if i%300==0 then task.wait() end
+            end
+            task.wait(0.001)
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- RENDER LOOP
+RunService.RenderStepped:Connect(function()
+    centerPosition=camera.ViewportSize/2
+
+    if fovCircle then
+        fovCircle.Visible=showFovCircle
+        fovCircle.Position=centerPosition
+        fovCircle.Radius=fovRadius
+    end
+
+    if fullBrightEnabled then
+        lighting.Brightness = 2
+        lighting.Ambient = Color3.new(1,1,1)
+        lighting.OutdoorAmbient = Color3.new(1,1,1)
+    end
+
+    if alwaysDayEnabled then
+        lighting.ClockTime = 12
+    end
+end)
+
+-- INIT
+for _,m in ipairs(Workspace:GetDescendants()) do
+    if m:IsA("Model") then addNPC(m) end
+end
+
+Workspace.DescendantAdded:Connect(function(m)
+    if m:IsA("Model") then
+        task.delay(0.1,function()
+            if isValidNPC(m) then addNPC(m) end
+        end)
+    end
+end)
+
+print("TOKAI HUB FINAL PERFECT LOADED 🚀")
