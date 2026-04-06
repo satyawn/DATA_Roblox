@@ -41,216 +41,173 @@ local fullBrightEnabled = false
 local alwaysDayEnabled = false
 local noFogConnection = nil
 
--- PERFORMANCE SETTINGS
-local maxDistance = 300
-local hitboxDistance = 250
-
--- FOV CIRCLE
+-- FOV CIRCLE OPTIMIZATION
 pcall(function()
     fovCircle = Drawing.new("Circle")
     fovCircle.Filled = false
     fovCircle.Thickness = 1.5
     fovCircle.Color = Color3.new(1,1,1)
+    fovCircle.Visible = false
 end)
 
--- NPC VALID
+-- NPC VALIDATION (STRICTER & FASTER)
 local function isValidNPC(m)
     if not m or not m.Parent then return false end
     local name = m.Name:lower()
     if string.find(name,"zombie") then return true end
-    if m.Name == "Male" then
-        for _,c in ipairs(m:GetChildren()) do
-            if c.Name:sub(1,3) == "AI_" then return true end
-        end
-    end
+    -- Cek folder atau tag tertentu biasanya lebih cepat daripada loop children
+    if m:FindFirstChild("Humanoid") then return true end 
     return false
 end
 
--- ADD NPC (OPTIMIZED ESP DISTANCE)
+-- ADD NPC (OPTIMIZED)
 local function addNPC(m)
-    if activeNPCs[m] or not isValidNPC(m) then return end
+    if activeNPCs[m] then return end
+    
     local head = m:FindFirstChild("Head")
     local root = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("UpperTorso")
+    
     if root then
         activeNPCs[m] = {head = head or root, root = root}
 
         if wallEnabled then
             local part = head or root
             if part and not part:FindFirstChild("Wall_Box") then
-                local dist = (camera.CFrame.Position - part.Position).Magnitude
-                if dist <= maxDistance then
-                    local s = Instance.new("SphereHandleAdornment")
-                    s.Name = "Wall_Box"
-                    s.Radius = 1.2
-                    s.Adornee = part
-                    s.AlwaysOnTop = true
-                    s.Transparency = 0.3
-                    s.Color3 = string.find(m.Name:lower(),"zombie") and Color3.fromRGB(255,0,0) or Color3.fromRGB(0,255,0)
-                    s.Parent = part
-                    trackedParts[part] = s
-                end
-            end
-        end
-
-        if outlineEnabled then
-            if not m:FindFirstChild("ESP_Outline") then
-                local h = Instance.new("Highlight")
-                h.Name = "ESP_Outline"
-                h.FillTransparency = 1
-                h.OutlineColor = string.find(m.Name:lower(),"zombie") and Color3.fromRGB(255,0,0) or Color3.fromRGB(0,255,0)
-                h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                h.Parent = m
+                local s = Instance.new("SphereHandleAdornment")
+                s.Name = "Wall_Box"
+                s.Radius = 1.2
+                s.Adornee = part
+                s.AlwaysOnTop = true
+                s.Transparency = 0.5 -- Sedikit lebih transparan biar FPS naik
+                s.Color3 = name:find("zombie") and Color3.fromRGB(255,0,0) or Color3.fromRGB(0,255,0)
+                s.Parent = part
+                trackedParts[part] = s
             end
         end
     end
 end
 
--- VISIBILITY
+-- VISIBILITY CHECK (RAYCAST OPTIMIZED)
 local function isVisible(target)
     if not target or not target:FindFirstChild("Head") then return false end
-    local ignore = {localPlayer.Character, target}
-    return #camera:GetPartsObscuringTarget({target.Head.Position}, ignore) == 0
+    local headPos = target.Head.Position
+    local camPos = camera.CFrame.Position
+    local rayParam = RaycastParams.new()
+    rayParam.FilterDescendantsInstances = {localPlayer.Character, target}
+    rayParam.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local result = Workspace:Raycast(camPos, (headPos - camPos).Unit * 500, rayParam)
+    return result == nil
 end
 
--- CLOSEST NPC
+-- TARGETING (OPTIMIZED LOOP)
 local function getClosestNPC()
     local closest, dist = nil, fovRadius
-    for m,d in pairs(activeNPCs) do
-        if m.Parent and d.head then
+    for m, d in pairs(activeNPCs) do
+        if m and m.Parent and d.head then
             local pos, onScreen = camera:WorldToViewportPoint(d.head.Position)
             if onScreen then
-                local d2 = (Vector2.new(pos.X,pos.Y) - centerPosition).Magnitude
-                if d2 <= fovRadius and d2 < dist and isVisible(m) then
-                    closest = m
-                    dist = d2
+                local d2 = (Vector2.new(pos.X, pos.Y) - centerPosition).Magnitude
+                if d2 <= fovRadius and d2 < dist then
+                    if isVisible(m) then
+                        closest = m
+                        dist = d2
+                    end
                 end
             end
+        else
+            activeNPCs[m] = nil -- Auto clean up
         end
     end
     return closest
 end
 
--- HITBOX (OPTIMIZED)
-local function applyHitbox(model, root)
-    local dist = (camera.CFrame.Position - root.Position).Magnitude
-    if dist > hitboxDistance then return end
-
-    if not originalSizes[model] then originalSizes[model] = root.Size end
-
-    if root.Size.X ~= hitboxSize then
-        root.Size = Vector3.new(hitboxSize,hitboxSize,hitboxSize)
-    end
-
-    root.Transparency = showHitbox and 0.8 or 1
-    if showHitbox then
-        root.Material = Enum.Material.Neon
-        root.Color = Color3.fromRGB(255,0,0)
-    end
-end
-
-local function restoreHitbox(model)
-    local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("UpperTorso")
-    if root and originalSizes[model] then
-        root.Size = originalSizes[model]
-        root.Transparency = 1
-    end
-end
-
--- CLEAR ESP
-local function clearSpheres()
-    for _,s in pairs(trackedParts) do
-        if s then s:Destroy() end
-    end
-    trackedParts = {}
-end
-
--- FAST SCAN OPTIMIZED
-local scanIndex = 1
-local cachedItems = {}
-
+-- SILENT AIM HOOK
 task.spawn(function()
-    while true do
-        if fastScanEnabled then
-            if #cachedItems == 0 then
-                cachedItems = Workspace:GetDescendants()
-                scanIndex = 1
-            end
-
-            for i = 1, 200 do
-                local m = cachedItems[scanIndex]
-                if not m then break end
-
-                if m:IsA("Model") and not activeNPCs[m] and isValidNPC(m) then
-                    addNPC(m)
+    pcall(function()
+        -- Gunakan method yang lebih aman/cepat jika tersedia
+        local func = filtergc('function',{Name='GetMuzzleCFrame'},true)
+        if func then
+            local old; old = hookfunction(func, function(self, cast)
+                local origin, barrel, cam = old(self, cast)
+                if silentAimEnabled then
+                    local npc = getClosestNPC()
+                    if npc and npc:FindFirstChild("Head") then
+                        return CFrame.new(origin.Position, npc.Head.Position), barrel, cam
+                    end
                 end
-
-                scanIndex += 1
-            end
-
-            if scanIndex > #cachedItems then
-                cachedItems = {}
-            end
-
-            task.wait(0.03)
-        else
-            task.wait(0.5)
+                return origin, barrel, cam
+            end)
         end
-    end
+    end)
 end)
 
--- HITBOX LOOP
+-- UI LOADER
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Window = Rayfield:CreateWindow({
+    Name = "TCATEZ HUB | FPS OPTIMIZED",
+    LoadingTitle = "Lightweight Version"
+})
+
+local CombatTab = Window:CreateTab("Combat ⚔️")
+CombatTab:CreateToggle({Name="Silent Aim", CurrentValue=false, Callback=function(v) silentAimEnabled=v end})
+CombatTab:CreateToggle({Name="Hitbox", CurrentValue=false, Callback=function(v) hitboxEnabled=v end})
+CombatTab:CreateSlider({Name="Hitbox Size", Range={1,20}, Increment=1, CurrentValue=2, Callback=function(v) hitboxSize=v end})
+
+local VisualTab = Window:CreateTab("Visual 👁️")
+VisualTab:CreateToggle({Name="FullBright", CurrentValue=false, Callback=function(v) fullBrightEnabled=v end})
+VisualTab:CreateToggle({Name="No Fog", CurrentValue=false, Callback=function(v) 
+    if v then 
+        lighting.FogEnd = 100000 
+    else 
+        lighting.FogEnd = originalLighting.FogEnd or 1000 
+    end 
+end})
+
+-- HITBOX LOOP (REDUCED FREQUENCY)
 task.spawn(function()
-    while true do
+    while task.wait(0.5) do -- 0.1 kelamaan, 0.5 cukup untuk FPS
         if hitboxEnabled then
-            for m,d in pairs(activeNPCs) do
-                if m.Parent then applyHitbox(m,d.root) end
+            for m, d in pairs(activeNPCs) do
+                if m.Parent and d.root then
+                    if not originalSizes[m] then originalSizes[m] = d.root.Size end
+                    d.root.Size = Vector3.new(hitboxSize, hitboxSize, hitboxSize)
+                    d.root.Transparency = showHitbox and 0.8 or 1
+                end
             end
-            task.wait(0.15)
-        else
-            for m,_ in pairs(originalSizes) do restoreHitbox(m) end
-            task.wait(0.3)
         end
     end
 end)
 
--- RENDER OPTIMIZED
-local lastUpdate = 0
+-- FAST SCAN (REPLACED WITH BETTER COLLECTION)
+task.spawn(function()
+    while task.wait(2) do -- Scan ulang setiap 2 detik saja
+        for _, m in ipairs(Workspace:GetChildren()) do
+            if m:IsA("Model") and isValidNPC(m) then
+                addNPC(m)
+            end
+        end
+    end
+end)
 
+-- RENDER STEPS (ONLY FOR VISUALS)
 RunService.RenderStepped:Connect(function()
-    centerPosition = camera.ViewportSize/2
-
-    if fovCircle then
-        fovCircle.Visible = showFovCircle and silentAimEnabled
+    centerPosition = camera.ViewportSize / 2
+    
+    if fovCircle and fovCircle.Visible ~= showFovCircle then
+        fovCircle.Visible = showFovCircle
+    end
+    
+    if showFovCircle and fovCircle then
         fovCircle.Position = centerPosition
         fovCircle.Radius = fovRadius
     end
 
-    if tick() - lastUpdate > 0.1 then
-        lastUpdate = tick()
-
-        if fullBrightEnabled then
-            lighting.Brightness = 2
-            lighting.Ambient = Color3.new(1,1,1)
-            lighting.OutdoorAmbient = Color3.new(1,1,1)
-        end
-
-        if alwaysDayEnabled then
-            lighting.ClockTime = 12
-        end
+    -- Update lighting hanya jika perlu
+    if fullBrightEnabled and lighting.Brightness ~= 2 then
+        lighting.Brightness = 2
+        lighting.Ambient = Color3.new(1,1,1)
     end
 end)
 
--- INIT
-for _,m in ipairs(Workspace:GetDescendants()) do
-    if m:IsA("Model") then addNPC(m) end
-end
-
-Workspace.DescendantAdded:Connect(function(m)
-    if m:IsA("Model") then
-        task.delay(0.1,function()
-            if isValidNPC(m) then addNPC(m) end
-        end)
-    end
-end)
-
-print("TOKAI HUB FINAL OPTIMIZED 🚀")
+print("TCATEZ LITE LOADED 🚀")
