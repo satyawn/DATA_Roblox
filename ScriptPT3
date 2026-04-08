@@ -184,64 +184,74 @@ local function restoreHitbox(model)
 end
 
 -- low performance
+local function applyToObject(v, state, players)
+    -- IGNORE PLAYER
+    if v:IsDescendantOf(players) then
+        return
+    end
+
+    -- 🔻 LOW QUALITY PART
+    if v:IsA("BasePart") then
+        if state then
+            v.Material = Enum.Material.SmoothPlastic
+            v.Reflectance = 0
+            v.CastShadow = false
+        end
+    end
+
+    -- ❌ MESH
+    if v:IsA("SpecialMesh") or v:IsA("MeshPart") then
+        if state then
+            pcall(function()
+                v.TextureId = ""
+            end)
+        end
+    end
+
+    -- ❌ TEXTURE
+    if v:IsA("Decal") or v:IsA("Texture") then
+        v.Transparency = state and 1 or 0
+    end
+
+    -- ❌ PARTICLES
+    if v:IsA("ParticleEmitter")
+    or v:IsA("Trail")
+    or v:IsA("Smoke")
+    or v:IsA("Fire")
+    or v:IsA("Sparkles") then
+        v.Enabled = not state
+    end
+
+    -- ❌ EXPLOSION
+    if v:IsA("Explosion") and state then
+        v.Visible = false
+        v.BlastPressure = 0
+        v.BlastRadius = 0
+    end
+
+    -- ❌ CLOTHES
+    if state then
+        if v:IsA("Shirt") or v:IsA("Pants") then
+            v:Destroy()
+        end
+    end
+end
+
+
 local function applyFPSBoost(state)
     local lighting = game:GetService("Lighting")
     local players = game:GetService("Players")
     local workspace = game:GetService("Workspace")
 
+    -- APPLY KE SEMUA OBJECT AWAL
     for _, v in ipairs(workspace:GetDescendants()) do
-
-        -- IGNORE PLAYER (optional)
-        if v:IsDescendantOf(players) then
-            continue
-        end
-
-        -- 🔻 LOW QUALITY PART
-        if v:IsA("BasePart") then
-            if state then
-                v.Material = Enum.Material.SmoothPlastic
-                v.Reflectance = 0
-                v.CastShadow = false
-            end
-        end
-
-        -- ❌ MESH
-        if v:IsA("SpecialMesh") or v:IsA("MeshPart") then
-            if state then
-                pcall(function()
-                    v.TextureId = ""
-                end)
-            end
-        end
-
-        -- ❌ TEXTURE
-        if v:IsA("Decal") or v:IsA("Texture") then
-            v.Transparency = state and 1 or 0
-        end
-
-        -- ❌ PARTICLES
-        if v:IsA("ParticleEmitter")
-        or v:IsA("Trail")
-        or v:IsA("Smoke")
-        or v:IsA("Fire")
-        or v:IsA("Sparkles") then
-            v.Enabled = not state
-        end
-
-        -- ❌ EXPLOSION
-        if v:IsA("Explosion") and state then
-            v.Visible = false
-            v.BlastPressure = 0
-            v.BlastRadius = 0
-        end
-
-        -- ❌ CLOTHES (EXTREME)
-        if state then
-            if v:IsA("Shirt") or v:IsA("Pants") then
-                v:Destroy()
-            end
-        end
+        applyToObject(v, state, players)
     end
+
+    -- AUTO UPDATE SAAT OBJECT BARU MASUK
+    workspace.DescendantAdded:Connect(function(v)
+        applyToObject(v, state, players)
+    end)
 
     -- 🎥 NO CAMERA EFFECT
     for _, v in ipairs(lighting:GetDescendants()) do
@@ -264,14 +274,13 @@ local function applyFPSBoost(state)
         lighting.GlobalShadows = false
         lighting.Brightness = 1
 
-        -- 🌍 FAR VIEW (INI YANG KAMU MAU)
+        -- 🌍 FAR VIEW
         lighting.FogStart = 0
         lighting.FogEnd = 100000
 
         pcall(function()
             settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
         end)
-
     else
         -- RESET
         lighting.GlobalShadows = true
