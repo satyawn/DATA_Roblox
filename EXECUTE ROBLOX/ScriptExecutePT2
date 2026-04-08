@@ -15,64 +15,6 @@ local originalLighting = {
     ClockTime = lighting.ClockTime
 }
 
--- FPS BOOSTER
-local lowPerformanceEnabled = false
-local fpsBackup = {}
-
-local function applyFPSBoost()
-    for _,v in pairs(Workspace:GetDescendants()) do
-        pcall(function()
-            if v:IsA("BasePart") then
-                if not fpsBackup[v] then
-                    fpsBackup[v] = {
-                        Material = v.Material,
-                        Reflectance = v.Reflectance
-                    }
-                end
-                v.Material = Enum.Material.Plastic
-                v.Reflectance = 0
-            end
-
-            if v:IsA("Decal") or v:IsA("Texture") then
-                v.Transparency = 1
-            end
-
-            if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then
-                v.Enabled = false
-            end
-
-            if v:IsA("Explosion") then
-                v.Visible = false
-            end
-        end)
-    end
-
-    lighting.GlobalShadows = false
-    lighting.FogEnd = 100000
-
-    local terrain = Workspace:FindFirstChildOfClass("Terrain")
-    if terrain then
-        terrain.WaterWaveSize = 0
-        terrain.WaterWaveSpeed = 0
-        terrain.WaterReflectance = 0
-        terrain.WaterTransparency = 1
-    end
-end
-
-local function restoreFPS()
-    for v,data in pairs(fpsBackup) do
-        pcall(function()
-            if v and v.Parent then
-                v.Material = data.Material
-                v.Reflectance = data.Reflectance
-            end
-        end)
-    end
-    fpsBackup = {}
-
-    lighting.GlobalShadows = true
-end
-
 -- VARIABLES
 local localPlayer = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -160,7 +102,7 @@ local function addNPC(m)
     end
 end
 
--- VISIBILITY
+-- VISIBILITY (OPTIMIZED CACHE)
 local function isVisible(targetData)
     if tick() - targetData.lastCheck < 0.2 then
         return targetData.visible
@@ -168,6 +110,7 @@ local function isVisible(targetData)
 
     targetData.lastCheck = tick()
     local target = targetData.root.Parent
+
     if not target or not target:FindFirstChild("Head") then return false end
 
     local ignore = {localPlayer.Character, target}
@@ -195,7 +138,7 @@ local function getClosestNPC()
     return closest
 end
 
--- SILENT AIM
+-- SILENT AIM (TETAP)
 task.spawn(function()
     pcall(function()
         local func = filtergc('function',{Name='GetMuzzleCFrame'},true)
@@ -217,9 +160,17 @@ end)
 -- HITBOX
 local function applyHitbox(model, root)
     if not originalSizes[model] then originalSizes[model] = root.Size end
+
     local newSize = Vector3.new(hitboxSize,hitboxSize,hitboxSize)
-    root.Size = newSize
+    if root.Size ~= newSize then
+        root.Size = newSize
+    end
+
     root.Transparency = showHitbox and 0.8 or 1
+    if showHitbox then
+        root.Material = Enum.Material.Neon
+        root.Color = Color3.fromRGB(255,0,0)
+    end
 end
 
 local function restoreHitbox(model)
@@ -230,6 +181,7 @@ local function restoreHitbox(model)
     end
 end
 
+-- CLEAR SPHERE
 local function clearSpheres()
     for _,s in pairs(trackedParts) do
         if s then s:Destroy() end
@@ -237,7 +189,7 @@ local function clearSpheres()
     trackedParts = {}
 end
 
--- UI
+-- UI (TETAP)
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 local Window = Rayfield:CreateWindow({
     Name = "TCATEZ HUB",
@@ -245,35 +197,154 @@ local Window = Rayfield:CreateWindow({
 })
 
 local CombatTab = Window:CreateTab("Combat ⚔️")
-CombatTab:CreateToggle({Name="Silent Aim",Callback=function(v) silentAimEnabled=v end})
-CombatTab:CreateToggle({Name="Hitbox",Callback=function(v) hitboxEnabled=v end})
+
+CombatTab:CreateToggle({Name="Silent Aim (FOV)",CurrentValue=false,Callback=function(v) silentAimEnabled=v end})
+CombatTab:CreateToggle({Name="Hitbox",CurrentValue=false,Callback=function(v) hitboxEnabled=v end})
+CombatTab:CreateToggle({Name="Show Hitbox Visual",CurrentValue=false,Callback=function(v) showHitbox=v end})
+
+CombatTab:CreateSlider({Name="Hitbox Size",Range={1,20},Increment=1,CurrentValue=20,Callback=function(v) hitboxSize=v end})
+
+CombatTab:CreateToggle({Name="Show FOV Circle",CurrentValue=true,Callback=function(v) showFovCircle=v end})
+CombatTab:CreateSlider({Name="FOV Radius",Range={0,500},Increment=1,CurrentValue=180,Callback=function(v) fovRadius=v end})
 
 local VisualTab = Window:CreateTab("Visual 👁️")
 
 VisualTab:CreateToggle({
-    Name="Low Performance Mode (FPS BOOST)",
+    Name="ESP NPC (Sphere)",
+    CurrentValue=false,
     Callback=function(v)
-        lowPerformanceEnabled = v
-        if v then applyFPSBoost() else restoreFPS() end
+        wallEnabled=v
+        if not v then clearSpheres() end
     end
 })
 
--- AUTO APPLY
-Workspace.DescendantAdded:Connect(function(v)
-    if lowPerformanceEnabled then
-        task.delay(0.1,function()
-            pcall(function()
-                if v:IsA("BasePart") then
-                    v.Material = Enum.Material.Plastic
-                    v.Reflectance = 0
-                elseif v:IsA("Decal") or v:IsA("Texture") then
-                    v.Transparency = 1
-                elseif v:IsA("ParticleEmitter") or v:IsA("Trail") then
-                    v.Enabled = false
+VisualTab:CreateToggle({
+    Name="ESP NPC (Outline Only)",
+    CurrentValue=false,
+    Callback=function(v)
+        outlineEnabled=v
+        for m,_ in pairs(activeNPCs) do
+            if not v then
+                local old=m:FindFirstChild("ESP_Outline")
+                if old then old:Destroy() end
+            end
+        end
+    end
+})
+
+VisualTab:CreateToggle({Name="Fast Scan (0.001s)",CurrentValue=false,Callback=function(v) fastScanEnabled=v end})
+
+VisualTab:CreateToggle({
+    Name="No Fog",
+    CurrentValue=false,
+    Callback=function(v)
+        local atm=lighting:FindFirstChildOfClass("Atmosphere")
+        if v then
+            if atm then
+                noFogConnection=atm:GetPropertyChangedSignal("Density"):Connect(function()
+                    atm.Density=0
+                end)
+                atm.Density=0
+            end
+            lighting.FogEnd=100000
+        else
+            if noFogConnection then noFogConnection:Disconnect() end
+            if atm then atm.Density=0.3 end
+        end
+    end
+})
+
+VisualTab:CreateToggle({
+    Name="FullBright",
+    CurrentValue=false,
+    Callback=function(v)
+        fullBrightEnabled=v
+        if not v then
+            lighting.Brightness = originalLighting.Brightness
+            lighting.Ambient = originalLighting.Ambient
+            lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+        end
+    end
+})
+
+VisualTab:CreateToggle({
+    Name="Always Day",
+    CurrentValue=false,
+    Callback=function(v)
+        alwaysDayEnabled=v
+        if not v then
+            lighting.ClockTime = originalLighting.ClockTime
+        end
+    end
+})
+
+-- LOOP HITBOX (OPTIMIZED)
+task.spawn(function()
+    while true do
+        if hitboxEnabled then
+            for m,d in pairs(activeNPCs) do
+                if m.Parent then applyHitbox(m,d.root) end
+            end
+        else
+            for m,_ in pairs(originalSizes) do restoreHitbox(m) end
+        end
+        task.wait(0.2)
+    end
+end)
+
+-- FAST SCAN (OPTIMIZED TANPA HAPUS)
+task.spawn(function()
+    while true do
+        if fastScanEnabled then
+            if tick() - lastScan > scanDelay then
+                lastScan = tick()
+                local items=Workspace:GetDescendants()
+                for i,m in ipairs(items) do
+                    if m:IsA("Model") and not activeNPCs[m] and isValidNPC(m) then
+                        addNPC(m)
+                    end
+                    if i%300==0 then task.wait() end
                 end
-            end)
+            end
+            task.wait(0.001)
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- RENDER LOOP
+RunService.RenderStepped:Connect(function()
+    centerPosition=camera.ViewportSize/2
+
+    if fovCircle then
+        fovCircle.Visible=showFovCircle
+        fovCircle.Position=centerPosition
+        fovCircle.Radius=fovRadius
+    end
+
+    if fullBrightEnabled then
+        lighting.Brightness = 2
+        lighting.Ambient = Color3.new(1,1,1)
+        lighting.OutdoorAmbient = Color3.new(1,1,1)
+    end
+
+    if alwaysDayEnabled then
+        lighting.ClockTime = 12
+    end
+end)
+
+-- INIT
+for _,m in ipairs(Workspace:GetDescendants()) do
+    if m:IsA("Model") then addNPC(m) end
+end
+
+Workspace.DescendantAdded:Connect(function(m)
+    if m:IsA("Model") then
+        task.delay(0.1,function()
+            if isValidNPC(m) then addNPC(m) end
         end)
     end
 end)
 
-print("TOKAI HUB FINAL + FPS BOOST 🚀")
+print("TOKAI HUB FINAL OPTIMIZED LOADED 🚀")
